@@ -36,6 +36,273 @@ The `jf-vid` crate is now moved to another repo [`jf-advz`](https://github.com/E
 - [`jf-relation`](relation): Jellyfish constraint system for PLONK.
 - [`jf-plonk`](plonk): KZG-PCS based TurboPlonk and UltraPlonk implementations.
 
+## Usage
+
+### Adding Jellyfish as a Dependency
+
+Add the following to your `Cargo.toml` to use the PLONK proving system:
+
+```toml
+[dependencies]
+jf-plonk = { git = "https://github.com/EspressoSystems/jellyfish", tag = "jf-plonk-v0.7.0" }
+jf-relation = { git = "https://github.com/EspressoSystems/jellyfish", tag = "jf-relation-v0.5.0" }
+
+# For testing with locally generated SRS (not for production)
+[features]
+test-srs = ["jf-plonk/test-srs"]
+```
+
+You'll also need arkworks dependencies for the specific curve you want to use:
+
+```toml
+[dependencies]
+ark-bls12-381 = "0.5"
+ark-ed-on-bls12-381 = "0.5"
+ark-ff = "0.5"
+ark-std = "0.5"
+```
+
+### Defining a Circuit
+
+Jellyfish provides a constraint system for building PLONK circuits. You can compose circuits using built-in gadgets or build custom gates.
+
+#### Using Built-in Gadgets
+
+```rust
+use ark_bls12_381::Fr;
+use jf_relation::{Circuit, PlonkCircuit};
+
+fn build_simple_circuit() -> Result<PlonkCircuit<Fr>, jf_relation::CircuitError> {
+    // Create a TurboPlonk circuit
+    let mut circuit = PlonkCircuit::<Fr>::new_turbo_plonk();
+
+    // Create variables (private witnesses)
+    let a = circuit.create_variable(Fr::from(3u64))?;
+    let b = circuit.create_variable(Fr::from(5u64))?;
+    
+    // Create public input variable
+    let c = circuit.create_public_variable(Fr::from(15u64))?;
+    
+    // Add constraint: a * b = c
+    circuit.mul_gate(a, b, c)?;
+    
+    // Finalize the circuit for proving
+    circuit.finalize_for_arithmetization()?;
+    
+    Ok(circuit)
+}
+```
+
+#### Building Custom Gates
+
+For more complex constraints, you can use the quadratic polynomial gate:
+
+```rust
+use ark_bls12_381::Fr;
+use jf_relation::{Circuit, PlonkCircuit};
+use jf_relation::constants::{GATE_WIDTH, N_MUL_SELECTORS};
+
+fn build_custom_gate_circuit() -> Result<PlonkCircuit<Fr>, jf_relation::CircuitError> {
+    let mut circuit = PlonkCircuit::<Fr>::new_turbo_plonk();
+    
+    // Create variables
+    let a = circuit.create_variable(Fr::from(2u64))?;
+    let b = circuit.create_variable(Fr::from(3u64))?;
+    let c = circuit.create_variable(Fr::from(4u64))?;
+    let d = circuit.create_variable(Fr::from(5u64))?;
+    
+    // Quadratic polynomial gate: q1*a + q2*b + q3*c + q4*d + q12*a*b + q34*c*d + q_c = q_o*e
+    let q_lc = [Fr::from(1u64), Fr::from(2u64), Fr::from(0u64), Fr::from(0u64)]; // linear coefficients
+    let q_mul = [Fr::from(1u64), Fr::from(0u64)]; // multiplication coefficients
+    let q_c = Fr::from(0u64); // constant term
+    
+    // This computes: 1*a + 2*b + 1*a*b = e
+    let e = circuit.gen_quad_poly(&[a, b, c, d], &q_lc, &q_mul, q_c)?;
+    
+    circuit.finalize_for_arithmetization()?;
+    
+    Ok(circuit)
+}
+```
+
+#### Using ECC Gadgets
+
+For elliptic curve operations (useful for signature verification, key derivation, etc.):
+
+```rust
+use ark_bls12_381::Bls12_381;
+use ark_ec::twisted_edwards::Affine as TEAffine;
+use ark_ed_on_bls12_381::{EdwardsAffine, EdwardsConfig, Fr};
+use ark_std::UniformRand;
+use jf_relation::{Circuit, PlonkCircuit};
+use jf_relation::gadgets::ecc::TEPoint;
+
+fn build_ecc_circuit(
+    scalar: Fr,
+    point: EdwardsAffine,
+) -> Result<PlonkCircuit<<EdwardsConfig as ark_ec::CurveConfig>::BaseField>, jf_relation::CircuitError> {
+    use jf_utils::fr_to_fq;
+    
+    let mut circuit = PlonkCircuit::new_turbo_plonk();
+    
+    // Create scalar variable (private witness)
+    let scalar_fq = fr_to_fq::<_, EdwardsConfig>(&scalar);
+    let scalar_var = circuit.create_variable(scalar_fq)?;
+    
+    // Create point variable (as constant)
+    let point_jf: TEPoint<_> = point.into();
+    let point_var = circuit.create_constant_point_variable(point_jf)?;
+    
+    // Perform scalar multiplication: result = scalar * point
+    let result_var = circuit.variable_base_scalar_mul::<EdwardsConfig>(scalar_var, &point_var)?;
+    
+    circuit.finalize_for_arithmetization()?;
+    
+    Ok(circuit)
+}
+```
+
+### Generating Proving and Verifying Keys (Setup Phase)
+
+After defining your circuit, generate the proving and verifying keys:
+
+```rust
+use ark_bls12_381::Bls12_381;
+use ark_std::rand::SeedableRng;
+use jf_plonk::proof_system::{PlonkKzgSnark, UniversalSNARK};
+use rand_chacha::ChaCha20Rng;
+
+fn setup_keys<C: jf_relation::Arithmetization<ark_bls12_381::Fr>>(
+    circuit: &C,
+) -> Result<(
+    <PlonkKzgSnark<Bls12_381> as UniversalSNARK<Bls12_381>>::ProvingKey,
+    <PlonkKzgSnark<Bls12_381> as UniversalSNARK<Bls12_381>>::VerifyingKey,
+), jf_plonk::errors::PlonkError> {
+    let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+    
+    // Get the required SRS size from the circuit
+    let srs_size = circuit.srs_size()?;
+    
+    // Generate universal SRS (for testing only - use MPC ceremony in production)
+    #[cfg(feature = "test-srs")]
+    let srs = PlonkKzgSnark::<Bls12_381>::universal_setup_for_testing(srs_size, &mut rng)?;
+    
+    // Generate proving and verifying keys
+    let (proving_key, verifying_key) = PlonkKzgSnark::<Bls12_381>::preprocess(&srs, circuit)?;
+    
+    Ok((proving_key, verifying_key))
+}
+```
+
+### Producing Proofs
+
+Generate a proof for a satisfied circuit:
+
+```rust
+use ark_bls12_381::Bls12_381;
+use ark_std::rand::SeedableRng;
+use jf_plonk::{
+    proof_system::{PlonkKzgSnark, UniversalSNARK, structs::ProvingKey},
+    transcript::StandardTranscript,
+};
+use rand_chacha::ChaCha20Rng;
+
+fn generate_proof<C: jf_relation::Arithmetization<ark_bls12_381::Fr>>(
+    circuit: &C,
+    proving_key: &ProvingKey<Bls12_381>,
+) -> Result<<PlonkKzgSnark<Bls12_381> as UniversalSNARK<Bls12_381>>::Proof, jf_plonk::errors::PlonkError> {
+    let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+    
+    // Generate proof using StandardTranscript for Fiat-Shamir
+    let proof = PlonkKzgSnark::<Bls12_381>::prove::<_, _, StandardTranscript>(
+        &mut rng,
+        circuit,
+        proving_key,
+        None, // Optional extra transcript message
+    )?;
+    
+    Ok(proof)
+}
+```
+
+### Verifying Proofs
+
+#### Off-chain Verification
+
+```rust
+use ark_bls12_381::{Bls12_381, Fr};
+use jf_plonk::{
+    proof_system::{PlonkKzgSnark, UniversalSNARK, structs::{Proof, VerifyingKey}},
+    transcript::StandardTranscript,
+};
+
+fn verify_proof(
+    verifying_key: &VerifyingKey<Bls12_381>,
+    public_inputs: &[Fr],
+    proof: &Proof<Bls12_381>,
+) -> Result<(), jf_plonk::errors::PlonkError> {
+    PlonkKzgSnark::<Bls12_381>::verify::<StandardTranscript>(
+        verifying_key,
+        public_inputs,
+        proof,
+        None, // Optional extra transcript message (must match prover)
+    )
+}
+```
+
+#### On-chain Verification (Solidity)
+
+For Ethereum smart contract verification, use the `SolidityTranscript`:
+
+```rust
+use ark_bls12_381::{Bls12_381, Fr};
+use jf_plonk::{
+    proof_system::{PlonkKzgSnark, UniversalSNARK, structs::{Proof, VerifyingKey}},
+    transcript::SolidityTranscript,
+};
+
+fn verify_proof_for_solidity(
+    verifying_key: &VerifyingKey<Bls12_381>,
+    public_inputs: &[Fr],
+    proof: &Proof<Bls12_381>,
+) -> Result<(), jf_plonk::errors::PlonkError> {
+    PlonkKzgSnark::<Bls12_381>::verify::<SolidityTranscript>(
+        verifying_key,
+        public_inputs,
+        proof,
+        None,
+    )
+}
+```
+
+### Complete Example
+
+See [`plonk/examples/proof_of_exp.rs`](plonk/examples/proof_of_exp.rs) for a complete working example that demonstrates:
+- Building a proof-of-knowledge circuit for discrete log
+- Setting up the proving system
+- Generating and verifying proofs
+
+Run it with:
+```bash
+cargo run --release --example proof-of-exp --features test-srs
+```
+
+### Available Gadgets
+
+The `jf-relation` crate provides several built-in gadgets:
+
+- **Arithmetic**: `add`, `sub`, `mul`, `enforce_constant`, `enforce_equal`
+- **Boolean**: `enforce_bool`, `create_boolean_variable`, `logic_and`, `logic_or`
+- **Comparison**: `is_less_than`, `enforce_less_than`
+- **Range**: `add_range_check_variable` (UltraPlonk only)
+- **ECC**: `variable_base_scalar_mul`, `fixed_base_scalar_mul`, `point_addition`
+- **Lookup tables**: `create_table_and_lookup_variables` (UltraPlonk only)
+
+### TurboPlonk vs UltraPlonk
+
+- **TurboPlonk**: Standard PLONK with custom gates. Use `PlonkCircuit::new_turbo_plonk()`.
+- **UltraPlonk**: Extended PLONK with lookup table support for efficient range checks and table lookups. Use `PlonkCircuit::new_ultra_plonk(range_bit_len)`.
+
 ## Development environment setup
 
 We recommend the following tools:
