@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [#843](https://github.com/EspressoSystems/jellyfish/pull/843): replace unmaintained `derivative` with `derive_where`.
 
+### Added
+
+- Added integration tests demonstrating README example patterns for the setup → prove → verify flow using deterministic RNG (requires `test-srs` feature).
+
 ## 0.7.0
 
 ### Breaking Changes

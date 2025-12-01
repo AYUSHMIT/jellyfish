@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [#843](https://github.com/EspressoSystems/jellyfish/pull/843): replace unmaintained `derivative` with `derive_where`.
 
+### Added
+
+- Added unit tests demonstrating README example patterns for circuit building (`build_simple_circuit`, `build_custom_gate_circuit`) and circuit finalization.
+
 ## 0.5.0
 
 - [#827](https://github.com/EspressoSystems/jellyfish/pull/827) Upgrade arkworks dependencies to v0.5.0.
