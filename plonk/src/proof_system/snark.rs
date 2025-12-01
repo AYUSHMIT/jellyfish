@@ -1756,4 +1756,143 @@ pub mod test {
 
         Ok(cs)
     }
+
+    // =======================================================================
+    // README Example Integration Tests
+    // =======================================================================
+    // These tests exercise the complete setup -> prove -> verify flow
+    // demonstrating basic usage of the jf-plonk proof system API.
+    // These tests require the `test-srs` feature and are not run by default.
+
+    #[cfg(feature = "test-srs")]
+    mod readme_examples {
+        use super::*;
+
+        /// Build a minimal arithmetic circuit for the README example.
+        /// This circuit proves knowledge of two private values a, b such that
+        /// a * b = public_product.
+        fn build_minimal_circuit<F: PrimeField>(
+            a_val: u32,
+            b_val: u32,
+        ) -> Result<(PlonkCircuit<F>, F), PlonkError> {
+            let mut circuit = PlonkCircuit::<F>::new_turbo_plonk();
+
+            // Create private witness variables
+            let a = circuit.create_variable(F::from(a_val))?;
+            let b = circuit.create_variable(F::from(b_val))?;
+
+            // Compute the product
+            let product = circuit.mul(a, b)?;
+
+            // Create a public variable for the product
+            let expected_product = F::from(a_val) * F::from(b_val);
+            let public_product = circuit.create_public_variable(expected_product)?;
+
+            // Enforce the equality constraint
+            circuit.enforce_equal(product, public_product)?;
+
+            // Finalize the circuit
+            circuit.finalize_for_arithmetization()?;
+
+            Ok((circuit, expected_product))
+        }
+
+        /// Integration test: Complete setup -> prove -> verify flow.
+        /// This test demonstrates the minimal workflow for using jf-plonk
+        /// with a deterministic RNG and the test-only universal SRS.
+        #[test]
+        fn test_minimal_prove_verify_flow() -> Result<(), PlonkError> {
+            test_minimal_prove_verify_flow_helper::<Bn254, Fq254, _>()?;
+            test_minimal_prove_verify_flow_helper::<Bls12_381, Fq381, _>()?;
+            test_minimal_prove_verify_flow_helper::<Bls12_377, Fq377, _>()
+        }
+
+        fn test_minimal_prove_verify_flow_helper<E, F, P>() -> Result<(), PlonkError>
+        where
+            E: Pairing<BaseField = F, G1Affine = Affine<P>>,
+            F: RescueParameter + SWToTEConParam,
+            P: SWCurveConfig<BaseField = F>,
+        {
+            // 1. Create a deterministic RNG for reproducibility
+            let mut rng = test_rng();
+
+            // 2. Build a simple circuit: prove knowledge of a, b such that a * b = 20
+            let (circuit, public_product) = build_minimal_circuit::<E::ScalarField>(4, 5)?;
+
+            // 3. Get the required SRS size from the circuit
+            let srs_size = circuit.srs_size()?;
+
+            // 4. Generate the universal SRS (test-only)
+            let srs = PlonkKzgSnark::<E>::universal_setup_for_testing(srs_size, &mut rng)?;
+
+            // 5. Preprocess to get proving and verifying keys
+            let (pk, vk) = PlonkKzgSnark::<E>::preprocess(&srs, &circuit)?;
+
+            // 6. Generate a proof
+            let proof = PlonkKzgSnark::<E>::prove::<_, _, StandardTranscript>(
+                &mut rng, &circuit, &pk, None,
+            )?;
+
+            // 7. Verify the proof
+            let public_inputs = vec![public_product];
+            assert!(PlonkKzgSnark::<E>::verify::<StandardTranscript>(
+                &vk,
+                &public_inputs,
+                &proof,
+                None,
+            )
+            .is_ok());
+
+            // 8. Verify that wrong public input fails
+            let wrong_public_inputs = vec![E::ScalarField::from(21u32)];
+            assert!(PlonkKzgSnark::<E>::verify::<StandardTranscript>(
+                &vk,
+                &wrong_public_inputs,
+                &proof,
+                None,
+            )
+            .is_err());
+
+            Ok(())
+        }
+
+        /// Integration test: Verify proof determinism with same RNG seed.
+        /// This test ensures that using the same deterministic RNG produces
+        /// identical proofs, which is important for testing and debugging.
+        #[test]
+        fn test_deterministic_proof_generation() -> Result<(), PlonkError> {
+            test_deterministic_proof_generation_helper::<Bn254, Fq254, _>()
+        }
+
+        fn test_deterministic_proof_generation_helper<E, F, P>() -> Result<(), PlonkError>
+        where
+            E: Pairing<BaseField = F, G1Affine = Affine<P>>,
+            F: RescueParameter + SWToTEConParam,
+            P: SWCurveConfig<BaseField = F>,
+        {
+            // Generate first proof with fresh RNG
+            let mut rng1 = test_rng();
+            let (circuit1, _) = build_minimal_circuit::<E::ScalarField>(3, 7)?;
+            let srs_size = circuit1.srs_size()?;
+            let srs1 = PlonkKzgSnark::<E>::universal_setup_for_testing(srs_size, &mut rng1)?;
+            let (pk1, _) = PlonkKzgSnark::<E>::preprocess(&srs1, &circuit1)?;
+            let proof1 = PlonkKzgSnark::<E>::prove::<_, _, StandardTranscript>(
+                &mut rng1, &circuit1, &pk1, None,
+            )?;
+
+            // Generate second proof with fresh RNG (same seed)
+            let mut rng2 = test_rng();
+            let (circuit2, _) = build_minimal_circuit::<E::ScalarField>(3, 7)?;
+            let srs2 = PlonkKzgSnark::<E>::universal_setup_for_testing(srs_size, &mut rng2)?;
+            let (pk2, _) = PlonkKzgSnark::<E>::preprocess(&srs2, &circuit2)?;
+            let proof2 = PlonkKzgSnark::<E>::prove::<_, _, StandardTranscript>(
+                &mut rng2, &circuit2, &pk2, None,
+            )?;
+
+            // Proofs should be identical since we used the same RNG seed
+            assert_eq!(proof1, proof2);
+
+            Ok(())
+        }
+    }
 }

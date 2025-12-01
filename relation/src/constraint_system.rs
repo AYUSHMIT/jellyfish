@@ -2417,4 +2417,154 @@ pub(crate) mod test {
 
         Ok(())
     }
+
+    // =======================================================================
+    // README Example Tests
+    // =======================================================================
+    // These tests exercise simple circuit building patterns that demonstrate
+    // basic usage of the jf-relation constraint system API.
+
+    /// Example: Build a simple arithmetic circuit that computes (a + b) * c = d
+    /// This demonstrates basic variable creation, arithmetic gates, and circuit
+    /// satisfiability checking.
+    fn build_simple_circuit<F: PrimeField>() -> Result<PlonkCircuit<F>, CircuitError> {
+        let mut circuit = PlonkCircuit::<F>::new_turbo_plonk();
+
+        // Create private variables
+        let a = circuit.create_variable(F::from(2u32))?;
+        let b = circuit.create_variable(F::from(3u32))?;
+        let c = circuit.create_variable(F::from(4u32))?;
+
+        // Compute (a + b) * c = d
+        let a_plus_b = circuit.add(a, b)?; // a + b = 5
+        let d = circuit.mul(a_plus_b, c)?; // 5 * 4 = 20
+
+        // Create a public variable for the expected result
+        let expected = circuit.create_public_variable(F::from(20u32))?;
+
+        // Enforce that d equals the expected result
+        circuit.enforce_equal(d, expected)?;
+
+        Ok(circuit)
+    }
+
+    /// Example: Build a circuit with custom gates using the constraint system.
+    /// This demonstrates boolean constraints, constant enforcement, and
+    /// combining multiple constraint types.
+    fn build_custom_gate_circuit<F: PrimeField>() -> Result<PlonkCircuit<F>, CircuitError> {
+        let mut circuit = PlonkCircuit::<F>::new_turbo_plonk();
+
+        // Create a boolean variable (constrained to be 0 or 1)
+        let flag = circuit.create_boolean_variable(true)?;
+
+        // Create constants
+        let const_val = circuit.create_constant_variable(F::from(42u32))?;
+
+        // Create a variable and enforce it equals a constant
+        let x = circuit.create_variable(F::from(10u32))?;
+        circuit.enforce_constant(x, F::from(10u32))?;
+
+        // Use the boolean flag in a computation:
+        // result = flag * const_val + (1 - flag) * x
+        // When flag = 1: result = 42
+        // When flag = 0: result = 10
+        let flag_var: super::Variable = flag.into();
+        let term1 = circuit.mul(flag_var, const_val)?;
+
+        // Compute (1 - flag)
+        let one = circuit.one();
+        let one_minus_flag = circuit.sub(one, flag_var)?;
+
+        // Compute (1 - flag) * x
+        let term2 = circuit.mul(one_minus_flag, x)?;
+
+        // result = term1 + term2
+        let result = circuit.add(term1, term2)?;
+
+        // Since flag = true (1), result should equal 42
+        let expected = circuit.create_public_variable(F::from(42u32))?;
+        circuit.enforce_equal(result, expected)?;
+
+        Ok(circuit)
+    }
+
+    #[test]
+    fn test_simple_circuit_example() -> Result<(), CircuitError> {
+        test_simple_circuit_example_helper::<FqEd254>()?;
+        test_simple_circuit_example_helper::<FqEd377>()?;
+        test_simple_circuit_example_helper::<FqEd381>()?;
+        test_simple_circuit_example_helper::<Fq377>()
+    }
+
+    fn test_simple_circuit_example_helper<F: PrimeField>() -> Result<(), CircuitError> {
+        let circuit = build_simple_circuit::<F>()?;
+
+        // Verify the circuit is satisfiable with correct public input
+        let pub_input = circuit.public_input()?;
+        assert_eq!(pub_input.len(), 1);
+        assert_eq!(pub_input[0], F::from(20u32));
+
+        // Check circuit satisfiability
+        assert!(circuit.check_circuit_satisfiability(&pub_input).is_ok());
+
+        // Verify incorrect public input fails
+        let bad_pub_input = vec![F::from(21u32)];
+        assert!(circuit.check_circuit_satisfiability(&bad_pub_input).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_custom_gate_circuit_example() -> Result<(), CircuitError> {
+        test_custom_gate_circuit_example_helper::<FqEd254>()?;
+        test_custom_gate_circuit_example_helper::<FqEd377>()?;
+        test_custom_gate_circuit_example_helper::<FqEd381>()?;
+        test_custom_gate_circuit_example_helper::<Fq377>()
+    }
+
+    fn test_custom_gate_circuit_example_helper<F: PrimeField>() -> Result<(), CircuitError> {
+        let circuit = build_custom_gate_circuit::<F>()?;
+
+        // Verify the circuit is satisfiable with correct public input
+        let pub_input = circuit.public_input()?;
+        assert_eq!(pub_input.len(), 1);
+        assert_eq!(pub_input[0], F::from(42u32));
+
+        // Check circuit satisfiability
+        assert!(circuit.check_circuit_satisfiability(&pub_input).is_ok());
+
+        // Verify incorrect public input fails
+        let bad_pub_input = vec![F::from(10u32)];
+        assert!(circuit.check_circuit_satisfiability(&bad_pub_input).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_circuit_finalization() -> Result<(), CircuitError> {
+        test_circuit_finalization_helper::<FqEd254>()?;
+        test_circuit_finalization_helper::<FqEd377>()?;
+        test_circuit_finalization_helper::<FqEd381>()?;
+        test_circuit_finalization_helper::<Fq377>()
+    }
+
+    fn test_circuit_finalization_helper<F: PrimeField>() -> Result<(), CircuitError> {
+        let mut circuit = build_simple_circuit::<F>()?;
+
+        // Finalize the circuit for arithmetization
+        circuit.finalize_for_arithmetization()?;
+
+        // Verify we can get the SRS size
+        let srs_size = circuit.srs_size()?;
+        assert!(srs_size > 0);
+
+        // Verify we can get the evaluation domain size
+        let domain_size = circuit.eval_domain_size()?;
+        assert!(domain_size > 0);
+
+        // Check that we cannot modify a finalized circuit
+        assert!(circuit.create_variable(F::from(1u32)).is_err());
+
+        Ok(())
+    }
 }
